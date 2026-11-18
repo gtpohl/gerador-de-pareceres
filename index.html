@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Preencha trechos selecionados de um modelo em Word."><title>Editor de modelos Word</title><link rel="stylesheet" href="style.css"><script defer src="jszip.min.js"></script><script defer src="app.js"></script></head>
+<body><header><div class="wrap"><span class="icon" aria-hidden="true">▤</span> Editor de modelos Word</div></header>
+<main class="wrap"><h1>Preencha seu modelo Word</h1><p>Importe um documento, selecione os trechos que deseja preencher e baixe a versão editável.</p>
+<section class="card upload-card"><label for="upload">Modelo em Word (.docx)</label><input id="upload" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"><p id="loadStatus" role="status">O documento é processado no seu navegador.</p></section>
+<div class="layout" id="editor" hidden>
+<section class="card"><h2 id="previewTitle">Texto do documento</h2><p>Selecione um trecho com o mouse ou toque e segure no celular. Depois, escolha <strong>Marcar trecho</strong>.</p><button type="button" id="mark" disabled>Marcar trecho</button><div id="paper" tabindex="0" aria-labelledby="previewTitle"></div></section>
+<section class="card changes"><h2>Conteúdos a inserir</h2><p id="empty">Os trechos marcados aparecem aqui. Para apagar um trecho na cópia final, deixe o conteúdo vazio.</p><div id="fields"></div><button type="button" id="download" disabled>Baixar Word editável</button><p id="status" role="status" aria-live="polite"></p></section>
+</div></main></body></html>
