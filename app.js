@@ -21,6 +21,44 @@ const signers = [
 let studentSequence = 0;
 const batch = new Map();
 let paragraphs = [];
+const reportModels = {
+  '2026': {word:'modelo.docx', pdf:'cabecalho.pdf', text:'texto.json', logo:'logo.png', pdfTop:214},
+  '2025': {word:'modelo-2025.docx', pdf:'cabecalho-2025.pdf', text:'texto-2025.json', logo:'logo-2025.png', pdfTop:229}
+};
+const modelTexts = new Map();
+
+function getModelText(model) {
+  if (!modelTexts.has(model)) {
+    const pending = fetch(model.text).then(response => {
+      if (!response.ok) throw new Error('Texto do modelo indisponível.');
+      return response.json();
+    }).catch(error => {
+      modelTexts.delete(model);
+      throw error;
+    });
+    modelTexts.set(model, pending);
+  }
+  return modelTexts.get(model);
+}
+
+async function updateReportModel() {
+  const year = $('reportModel').value;
+  const model = reportModels[year];
+  $('modelYear').textContent = year;
+  $('modelLogo').src = model.logo;
+  $('modelStatus').textContent = 'Carregando o modelo…';
+  paragraphs = [];
+  render();
+  try {
+    const texts = await getModelText(model);
+    if ($('reportModel').value !== year) return;
+    paragraphs = texts;
+    $('modelStatus').textContent = '';
+    render();
+  } catch (error) {
+    if ($('reportModel').value === year) $('modelStatus').textContent = 'Prévia indisponível. Recarregue a página ou troque de modelo.';
+  }
+}
 
 function parse(source) {
   const doc = parser.parseFromString(source, 'application/xml');
@@ -391,8 +429,8 @@ async function generateWord(data, images, template) {
   return zip.generateAsync({type:'blob', compression:'DEFLATE', mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
 }
 
-async function generatePdf(data, images, template) {
-  if (!paragraphs.length) throw new Error('Texto do modelo indisponível.');
+async function generatePdf(data, images, template, modelText, pdfTop) {
+  if (!modelText.length) throw new Error('Texto do modelo indisponível.');
   const {PDFDocument, StandardFonts, rgb} = PDFLib;
   const pdf = await PDFDocument.load(template);
   pdf.setTitle('Parecer de retenção');
@@ -406,7 +444,7 @@ async function generatePdf(data, images, template) {
   const supported = new Set(regular.getCharacterSet());
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d');
-  let y = height - 214;
+  let y = height - pdfTop;
 
   const supports = text => Array.from(text).every(char => supported.has(char.codePointAt(0)));
   function measure(text, size, font) {
@@ -472,7 +510,7 @@ async function generatePdf(data, images, template) {
   await block('Nome do(a) Professor(a): ' + data.professor);
   await block('Disciplina: ' + data.disciplina, {gap:15});
   await block('PARECER SOBRE A RETENÇÃO', {font:bold, size:12, center:true, gap:10});
-  for (const text of paragraphs) await block(interpolate(text, data), {gap:8});
+  for (const text of modelText) await block(interpolate(text, data), {gap:8});
   ensureSpace(88);
   await block('Data: ' + data.data, {gap:22});
   const labels = ['Assinatura do Diretor', 'Assinatura do Professor', 'Assinatura do Responsável'];
@@ -505,12 +543,17 @@ $('form').addEventListener('submit', async event => {
     return;
   }
   const format = event.submitter?.value === 'pdf' ? 'pdf' : 'docx';
+  const year = $('reportModel').value;
+  const model = reportModels[year];
   const images = {...signatures};
   const buttons = [$('download'), $('downloadPdf')];
   buttons.forEach(button => button.disabled = true);
   $('exportStatus').textContent = 'Gerando ' + data.length + (data.length === 1 ? ' parecer…' : ' pareceres…');
   try {
-    const response = await fetch(format === 'pdf' ? 'cabecalho.pdf' : 'modelo.docx');
+    const [response, modelText] = await Promise.all([
+      fetch(format === 'pdf' ? model.pdf : model.word),
+      format === 'pdf' ? getModelText(model) : Promise.resolve(null)
+    ]);
     if (!response.ok) throw new Error('Modelo indisponível.');
     const template = await response.arrayBuffer();
     const packageZip = data.length > 1 ? new JSZip() : null;
@@ -518,12 +561,12 @@ $('form').addEventListener('submit', async event => {
     let name;
     for (const [index, entry] of data.entries()) {
       const safeName = entry.aluno.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').slice(0,100);
-      name = 'Parecer de retenção - ' + safeName + '.' + format;
-      blob = format === 'pdf' ? await generatePdf(entry, images, template) : await generateWord(entry, images, template);
+      name = 'Parecer de retenção ' + year + ' - ' + safeName + '.' + format;
+      blob = format === 'pdf' ? await generatePdf(entry, images, template, modelText, model.pdfTop) : await generateWord(entry, images, template);
       if (packageZip) packageZip.file(String(index + 1).padStart(2, '0') + ' - ' + name, await blob.arrayBuffer());
     }
     if (packageZip) {
-      name = 'Pareceres de retenção - ' + format.toUpperCase() + '.zip';
+      name = 'Pareceres de retenção ' + year + ' - ' + format.toUpperCase() + '.zip';
       blob = await packageZip.generateAsync({type:'blob'});
     }
     const url = URL.createObjectURL(blob);
@@ -544,11 +587,5 @@ $('form').addEventListener('submit', async event => {
 });
 
 $('data').value = new Intl.DateTimeFormat('sv-SE', {timeZone:'America/Sao_Paulo', year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date());
-render();
-fetch('texto.json').then(response => {
-  if (!response.ok) throw new Error('Prévia indisponível');
-  return response.json();
-}).then(texts => {
-  paragraphs = texts;
-  render();
-}).catch(() => { $('paragraphs').textContent = 'Prévia do texto indisponível.'; });
+$('reportModel').addEventListener('change', updateReportModel);
+updateReportModel();
