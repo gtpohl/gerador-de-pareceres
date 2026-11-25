@@ -13,6 +13,9 @@ const parser = new DOMParser();
 const serializer = new XMLSerializer();
 const elements = (node, name) => Array.from(node.getElementsByTagNameNS('*', name));
 let roster = [];
+const schoolListName = 'Vila Andrade (lista da escola)';
+const classLists = new Map();
+const classListStorage = 'parecer-retencao-class-lists-v1';
 const signatures = {};
 const signers = [
   {key:'director', input:'directorSignature', preview:'directorSignaturePreview', clear:'clearDirectorSignature', label:'Diretor', id:7901, tab:1400},
@@ -195,7 +198,7 @@ function updateStudents() {
   const hasHeader = $('header').checked;
   const genderColumn = hasHeader && tab.rows[0]
     ? [...tab.rows[0]].find(([, label]) => /^(sexo|genero|tratamento)$/.test(compactName(label)))?.[0] : null;
-  if (tab.column !== column || tab.hasHeader !== hasHeader) {
+  if (!tab.students || tab.column !== column || tab.hasHeader !== hasHeader) {
     for (const student of tab.students || []) batch.delete(student.id);
     tab.column = column;
     tab.hasHeader = hasHeader;
@@ -241,6 +244,7 @@ function updateSheet() {
   const tab = roster[Number($('sheet').value)];
   const columns = [...new Set(tab.rows.flatMap(row => [...row.keys()]))].sort((a,b) => a.length - b.length || a.localeCompare(b));
   const first = tab.rows[0] || new Map();
+  $('removeList').hidden = tab.workbook === schoolListName;
   const identified = columns.find(col => nameLabels.test(compactName(first.get(col) || '')));
   const probableName = columns.find(col => tab.rows.some(row => /\p{L}+\s+\p{L}+/u.test(row.get(col) || '')));
   $('header').checked = Boolean(identified || [...first.values()].some(value => /^(ra|matricula|chamada|sexo|genero|tratamento)$/.test(compactName(value))));
@@ -250,33 +254,172 @@ function updateSheet() {
   updateStudents();
 }
 
-$('file').addEventListener('change', async event => {
-  const file = event.target.files[0];
-  if (!file) return;
-  $('importStatus').textContent = 'Lendo a planilha…';
+function saveClassLists() {
   try {
-    const loaded = await readWorkbook(file);
-    if (event.target.files[0] !== file) return;
-    batch.clear();
-    roster = loaded;
-    $('previewBatch').hidden = false;
-    $('filename').textContent = file.name;
-    selectOptions($('sheet'), roster.map((tab, index) => [tab.name, String(index)]));
-    $('sheet').value = String(roster.findIndex(tab => tab.rows.length));
-    $('pickers').hidden = false;
-    $('manualStudent').hidden = true;
-    for (const id of ['aluno','classe','gender']) $(id).disabled = true;
-    updateSheet();
-    $('importStatus').textContent = roster.length + (roster.length === 1 ? ' aba importada.' : ' abas importadas.');
+    const saved = Array.from(classLists)
+      .filter(([, workbook]) => workbook.remember)
+      .map(([name, workbook]) => [name, workbook.tabs.map(tab => ({
+        name:tab.name, rows:tab.rows.map(row => [...row]),
+        column:tab.column, hasHeader:tab.hasHeader
+      }))]);
+    if (saved.length) localStorage.setItem(classListStorage, JSON.stringify(saved));
+    else localStorage.removeItem(classListStorage);
+    return true;
   } catch (error) {
-    if (event.target.files[0] !== file) return;
-    $('importStatus').textContent = 'Não foi possível ler a planilha. Selecione um arquivo .xlsx válido e com dados.';
-    event.target.value = '';
+    return false;
+  }
+}
+
+function refreshClassLists(preferred) {
+  const previous = preferred || roster[Number($('sheet').value)];
+  roster = [...classLists.values()].flatMap(workbook => workbook.tabs);
+  $('pickers').hidden = !roster.length;
+  $('previewBatch').hidden = !roster.length;
+  $('manualStudent').hidden = Boolean(roster.length);
+  for (const id of ['aluno','classe','gender']) $(id).disabled = Boolean(roster.length);
+  if (!roster.length) {
+    students = [];
+    updateSelection();
+    return;
+  }
+  const multiple = classLists.size > 1;
+  selectOptions($('sheet'), roster.map((tab,index) => [
+    multiple ? tab.name + ' — ' + tab.workbook : tab.name, String(index)
+  ]));
+  $('sheet').value = String(Math.max(0, roster.indexOf(previous)));
+  updateSheet();
+}
+
+function removeClassWorkbook(name) {
+  const workbook = classLists.get(name);
+  for (const tab of workbook?.tabs || []) {
+    for (const student of tab.students || []) batch.delete(student.id);
+  }
+  classLists.delete(name);
+}
+
+function restoreClassLists() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(classListStorage) || '[]');
+    for (const [name, tabs] of saved) {
+      classLists.set(name, {remember:true, tabs:tabs.map(tab => ({
+        ...tab, workbook:name, rows:tab.rows.map(row => new Map(row))
+      }))});
+    }
+  } catch (error) {
+    $('importStatus').textContent = 'As listas salvas não puderam ser recuperadas. Você pode importá-las novamente.';
+  }
+  if (classLists.size) refreshClassLists();
+}
+
+async function decryptSchoolList(bytes, password) {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
+  );
+  const key = await crypto.subtle.deriveKey({
+    name:'PBKDF2', salt:bytes.slice(0,16), iterations:600000, hash:'SHA-256'
+  }, keyMaterial, {name:'AES-GCM',length:256}, false, ['decrypt']);
+  return crypto.subtle.decrypt({name:'AES-GCM',iv:bytes.slice(16,28)},key,bytes.slice(28));
+}
+
+$('classSource').addEventListener('change', () => {
+  const school = $('classSource').value === 'school';
+  $('schoolList').hidden = !school;
+  $('uploadLists').hidden = school;
+  if (school && classLists.has(schoolListName)) refreshClassLists(classLists.get(schoolListName).tabs[0]);
+});
+
+$('schoolPassword').addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  $('unlockSchool').click();
+});
+
+$('unlockSchool').addEventListener('click', async () => {
+  const input = $('schoolPassword');
+  const password = input.value.trim();
+  if (!password) {
+    $('schoolStatus').textContent = 'Digite a senha da lista da escola.';
+    input.focus();
+    return;
+  }
+  const button = $('unlockSchool');
+  button.disabled = true;
+  $('schoolStatus').textContent = 'Carregando as turmas…';
+  try {
+    const response = await fetch('turmas-vla.enc');
+    if (!response.ok) throw new Error('Arquivo da escola indisponível. Confira se turmas-vla.enc está na pasta do site.');
+    let plain;
+    try {
+      plain = await decryptSchoolList(new Uint8Array(await response.arrayBuffer()), password);
+    } catch (error) {
+      throw new Error('Não foi possível abrir a lista. Confira a senha e se o site foi aberto em HTTPS.');
+    }
+    const tabs = await readWorkbook(new Blob([plain]));
+    for (const tab of tabs) tab.workbook = schoolListName;
+    classLists.set(schoolListName, {remember:false,tabs});
+    refreshClassLists(tabs[0]);
+    input.value = '';
+    $('schoolUnlock').hidden = true;
+    $('schoolStatus').textContent = tabs.length + ' turmas carregadas. Escolha uma no menu abaixo.';
+  } catch (error) {
+    $('schoolStatus').textContent = error.message;
+  } finally {
+    button.disabled = false;
   }
 });
 
+$('file').addEventListener('change', async event => {
+  const input = event.target;
+  const files = [...input.files];
+  if (!files.length) return;
+  const remember = $('rememberLists').checked;
+  input.disabled = true;
+  $('importStatus').textContent = 'Lendo as planilhas…';
+  const imported = [];
+  const failed = [];
+  try {
+    for (const file of files) {
+      try {
+        const tabs = (await readWorkbook(file)).filter(tab => tab.rows.length);
+        for (const tab of tabs) tab.workbook = file.name;
+        removeClassWorkbook(file.name);
+        classLists.set(file.name, {remember, tabs});
+        imported.push(tabs[0]);
+      } catch (error) {
+        failed.push(file.name);
+      }
+    }
+    if (imported.length) refreshClassLists(imported[0]);
+    const saved = !imported.length || saveClassLists();
+    $('importStatus').textContent = [
+      imported.length ? imported.length + (imported.length === 1 ? ' planilha adicionada.' : ' planilhas adicionadas.') : '',
+      failed.length ? 'Não foi possível importar: ' + failed.join(', ') + '.' : '',
+      saved ? '' : 'O navegador não conseguiu salvar as listas. Elas podem ser usadas nesta sessão.'
+    ].filter(Boolean).join(' ');
+  } finally {
+    input.value = '';
+    input.disabled = false;
+  }
+});
+
+$('removeList').addEventListener('click', () => {
+  const tab = roster[Number($('sheet').value)];
+  if (!tab || !window.confirm('Remover a planilha “' + tab.workbook + '” e suas turmas deste navegador?')) return;
+  removeClassWorkbook(tab.workbook);
+  refreshClassLists();
+  $('importStatus').textContent = saveClassLists()
+    ? 'Planilha removida.' : 'Planilha removida desta sessão. Não foi possível atualizar as listas salvas.';
+});
+
 $('sheet').addEventListener('change', updateSheet);
-for (const id of ['column', 'header']) $(id).addEventListener('change', updateStudents);
+for (const id of ['column','header']) {
+  $(id).addEventListener('change', () => {
+    updateStudents();
+    if (!saveClassLists()) $('importStatus').textContent = 'Não foi possível salvar o ajuste no navegador.';
+  });
+}
+
 $('previewStudent').addEventListener('change', render);
 $('removeFromBatch').addEventListener('click', () => {
   const student = batch.get($('previewStudent').value);
@@ -588,4 +731,5 @@ $('form').addEventListener('submit', async event => {
 
 $('data').value = new Intl.DateTimeFormat('sv-SE', {timeZone:'America/Sao_Paulo', year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date());
 $('reportModel').addEventListener('change', updateReportModel);
+restoreClassLists();
 updateReportModel();
