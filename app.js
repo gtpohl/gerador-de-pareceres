@@ -312,60 +312,37 @@ function restoreClassLists() {
   if (classLists.size) refreshClassLists();
 }
 
-async function decryptSchoolList(bytes, password) {
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
-  );
-  const key = await crypto.subtle.deriveKey({
-    name:'PBKDF2', salt:bytes.slice(0,16), iterations:600000, hash:'SHA-256'
-  }, keyMaterial, {name:'AES-GCM',length:256}, false, ['decrypt']);
-  return crypto.subtle.decrypt({name:'AES-GCM',iv:bytes.slice(16,28)},key,bytes.slice(28));
-}
-
-$('classSource').addEventListener('change', () => {
-  const school = $('classSource').value === 'school';
+let schoolLoad;
+$('classSource').addEventListener('change', async () => {
+  const source = $('classSource');
+  const school = source.value === 'school';
   $('schoolList').hidden = !school;
   $('uploadLists').hidden = school;
-  if (school && classLists.has(schoolListName)) refreshClassLists(classLists.get(schoolListName).tabs[0]);
-});
+  if (!school) return;
 
-$('schoolPassword').addEventListener('keydown', event => {
-  if (event.key !== 'Enter') return;
-  event.preventDefault();
-  $('unlockSchool').click();
-});
-
-$('unlockSchool').addEventListener('click', async () => {
-  const input = $('schoolPassword');
-  const password = input.value.trim();
-  if (!password) {
-    $('schoolStatus').textContent = 'Digite a senha da lista da escola.';
-    input.focus();
-    return;
-  }
-  const button = $('unlockSchool');
-  button.disabled = true;
-  $('schoolStatus').textContent = 'Carregando as turmas…';
+  const status = $('schoolStatus');
+  status.textContent = 'Carregando as turmas…';
   try {
-    const response = await fetch('turmas-vla.enc');
-    if (!response.ok) throw new Error('Arquivo da escola indisponível. Confira se turmas-vla.enc está na pasta do site.');
-    let plain;
-    try {
-      plain = await decryptSchoolList(new Uint8Array(await response.arrayBuffer()), password);
-    } catch (error) {
-      throw new Error('Não foi possível abrir a lista. Confira a senha e se o site foi aberto em HTTPS.');
-    }
-    const tabs = await readWorkbook(new Blob([plain]));
-    for (const tab of tabs) tab.workbook = schoolListName;
+    schoolLoad ??= (async () => {
+      const response = await fetch('turmas-vla.xlsx');
+      if (!response.ok) throw new Error('Planilha indisponível');
+      const tabs = await readWorkbook(await response.blob());
+      for (const tab of tabs) tab.workbook = schoolListName;
+      return tabs;
+    })().catch(error => {
+      schoolLoad = undefined;
+      throw error;
+    });
+    const tabs = await schoolLoad;
+    if (source.value !== 'school') return;
     classLists.set(schoolListName, {remember:false,tabs});
     refreshClassLists(tabs[0]);
-    input.value = '';
-    $('schoolUnlock').hidden = true;
-    $('schoolStatus').textContent = tabs.length + ' turmas carregadas. Escolha uma no menu abaixo.';
+    status.textContent = tabs.length + ' turmas carregadas. Escolha uma no menu abaixo.';
   } catch (error) {
-    $('schoolStatus').textContent = error.message;
-  } finally {
-    button.disabled = false;
+    // Return to the import option so the user can select the school list again.
+    source.value = 'upload';
+    source.dispatchEvent(new Event('change'));
+    $('importStatus').textContent = 'Não foi possível carregar a lista da escola. Selecione-a novamente ou importe um Excel.';
   }
 });
 
