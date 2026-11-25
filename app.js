@@ -13,7 +13,7 @@ const parser = new DOMParser();
 const serializer = new XMLSerializer();
 const elements = (node, name) => Array.from(node.getElementsByTagNameNS('*', name));
 let roster = [];
-const schoolListName = 'Vila Andrade (lista da escola)';
+const schoolListName = 'Campus Vila Andrade';
 const classLists = new Map();
 const classListStorage = 'parecer-retencao-class-lists-v1';
 const signatures = {};
